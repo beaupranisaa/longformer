@@ -1,0 +1,13 @@
+To run summarization.py
+- !pip install git+https://github.com/allenai/longformer.git
+- !pip install --upgrade pytorch-lightning
+- pytorch_lightning.logging >> pytorch_lightning.loggers
+- LightningDistributedDataParallel >> LightningParallelModule
+- delete @pl.data_loader
+- self.save_hyperparameters(params) instead of self.hparams = params
+- filename >> dirpath
+- remove prefix = ''
+- val_percent_check >> limit_val_batches 
+- test_percent_check >> limit_test_batches
+- remove use_ddp 'Trainer' object has no attribute 'use_ddp'
+- batchsize original = 16 >> 4

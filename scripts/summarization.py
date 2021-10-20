@@ -11,9 +11,9 @@ import nlp
 from rouge_score import rouge_scorer
 
 import pytorch_lightning as pl
-from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning.loggers import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
+from pytorch_lightning.overrides.data_parallel import LightningParallelModule
 
 
 from longformer import LongformerEncoderDecoderForConditionalGeneration, LongformerEncoderDecoderConfig
@@ -82,10 +82,12 @@ class Summarizer(pl.LightningModule):
     def __init__(self, params):
         super().__init__()
         self.args = params
-        self.hparams = params
+        #self.hparams = params
+        self.save_hyperparameters(params)
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.tokenizer, use_fast=True)
 
         if 'long' in self.args.model_path:
+            print('longgggggg')
             config = LongformerEncoderDecoderConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
             config.gradient_checkpointing = self.args.grad_ckpt
@@ -94,6 +96,7 @@ class Summarizer(pl.LightningModule):
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
                 self.args.model_path, config=config)
         else:
+            print('not longgggg')
             config = AutoConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
             self.model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -189,9 +192,9 @@ class Summarizer(pl.LightningModule):
         metrics = []
         for name in names:
             metric = torch.stack([x[name] for x in outputs]).mean()
-            if self.trainer.use_ddp:
-                torch.distributed.all_reduce(metric, op=torch.distributed.ReduceOp.SUM)
-                metric /= self.trainer.world_size
+            #if self.trainer.use_ddp:
+            #    torch.distributed.all_reduce(metric, op=torch.distributed.ReduceOp.SUM)
+            #    metric /= self.trainer.world_size
             metrics.append(metric)
         logs = dict(zip(*[names, metrics]))
         print(logs)
@@ -223,22 +226,22 @@ class Summarizer(pl.LightningModule):
             return current_dataloader
         dataset = SummarizationDataset(hf_dataset=self.hf_datasets[split_name], tokenizer=self.tokenizer,
                                        max_input_len=self.args.max_input_len, max_output_len=self.args.max_output_len)
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train) if self.trainer.use_ddp else None
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train if self.trainer.use_ddp else None)
         return DataLoader(dataset, batch_size=self.args.batch_size, shuffle=(sampler is None),
                           num_workers=self.args.num_workers, sampler=sampler,
                           collate_fn=SummarizationDataset.collate_fn)
 
-    @pl.data_loader
+    #@pl.data_loader
     def train_dataloader(self):
         self.train_dataloader_object = self._get_dataloader(self.train_dataloader_object, 'train', is_train=True)
         return self.train_dataloader_object
 
-    @pl.data_loader
+    #@pl.data_loader
     def val_dataloader(self):
         self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, 'validation', is_train=False)
         return self.val_dataloader_object
 
-    @pl.data_loader
+    #@pl.data_loader
     def test_dataloader(self):
         self.test_dataloader_object = self._get_dataloader(self.test_dataloader_object, 'test', is_train=False)
         return self.test_dataloader_object
@@ -255,7 +258,7 @@ class Summarizer(pl.LightningModule):
     def add_model_specific_args(parser, root_dir):
         parser.add_argument("--save_dir", type=str, default='summarization')
         parser.add_argument("--save_prefix", type=str, default='test')
-        parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
+        parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
         parser.add_argument("--grad_accum", type=int, default=1, help="number of gradient accumulation steps")
         parser.add_argument("--gpus", type=int, default=-1,
                             help="Number of gpus. 0 for CPU")
@@ -265,15 +268,15 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--val_percent_check", default=1.00, type=float, help='Percent of validation data used')
         parser.add_argument("--num_workers", type=int, default=0, help="Number of data loader workers")
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
-        parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
+        parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
         parser.add_argument("--disable_checkpointing", action='store_true', help="No logging or checkpointing")
         parser.add_argument("--max_output_len", type=int, default=256,
                             help="maximum num of wordpieces/summary. Used for training and testing")
         parser.add_argument("--max_input_len", type=int, default=512,
                             help="maximum num of wordpieces/summary. Used for training and testing")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
-        parser.add_argument("--model_path", type=str, default='facebook/bart-base',
-                            help="Path to the checkpoint directory or model name")
+        parser.add_argument("--model_path", type=str, default='../models/longformer_16k', #'facebook/bart-base',
+                            help="Path to the checkpoint directory or model name long")
         parser.add_argument("--tokenizer", type=str, default='facebook/bart-base')
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
@@ -302,7 +305,7 @@ def main(args):
         model = Summarizer.load_from_checkpoint(args.from_pretrained, args)
     else:
         model = Summarizer(args)
-
+    # print("Modelllllll: ", model)
     model.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
 
     logger = TestTubeLogger(
@@ -312,13 +315,13 @@ def main(args):
     )
 
     checkpoint_callback = ModelCheckpoint(
-        filepath=os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
+        dirpath =os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
         save_top_k=5,
         verbose=True,
         monitor='avg_val_loss',
         mode='min',
-        period=-1,
-        prefix=''
+        #period=-1,
+        #prefix=''
     )
 
     print(args)
@@ -331,16 +334,16 @@ def main(args):
                          max_steps=None if not args.debug else 1,
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.grad_accum,
-                         val_check_interval=args.val_every if not args.debug else 1,
+                         limit_val_batches=args.val_every if not args.debug else 1,
                          num_sanity_val_steps=2 if not args.debug else 0,
                          check_val_every_n_epoch=1 if not args.debug else 1,
-                         val_percent_check=args.val_percent_check,
-                         test_percent_check=args.val_percent_check,
+                         #val_percent_check=args.val_percent_check,
+                         limit_test_batches=args.val_percent_check,
                          logger=logger,
-                         checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
-                         show_progress_bar=not args.no_progress_bar,
-                         use_amp=not args.fp32, amp_level='O2',
-                         resume_from_checkpoint=args.resume_ckpt,
+                         #checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
+                         #show_progress_bar=not args.no_progress_bar,
+                         #use_amp=not args.fp32, amp_level='O2',
+                         #resume_from_checkpoint=args.resume_ckpt,
                          )
     if not args.test:
         trainer.fit(model)
@@ -352,3 +355,4 @@ if __name__ == "__main__":
     parser = Summarizer.add_model_specific_args(main_arg_parser, os.getcwd())
     args = parser.parse_args()
     main(args)
+    

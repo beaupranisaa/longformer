@@ -106,7 +106,7 @@ def main():
     parser.add_argument(
         '--save_model_to',
         type=str,
-        default='../models/longformer_16k',
+        default='../../models/longformer_16k',
         required=False,
         help='The path to save the converted model'
     )

@@ -88,7 +88,9 @@ def create_long_model(
 
 
 def main():
+    print("HI1")
     parser = argparse.ArgumentParser(description="Convert BART to LongBART. Replaces BART encoder's SelfAttnetion with LongformerSelfAttention")
+    print("HI2")
     parser.add_argument(
         '--base_model',
         type=str,
@@ -104,7 +106,8 @@ def main():
     parser.add_argument(
         '--save_model_to',
         type=str,
-        required=True,
+        default='../models/longformer_16k',
+        required=False,
         help='The path to save the converted model'
     )
     parser.add_argument(
@@ -119,8 +122,11 @@ def main():
         default=4096 * 4,
         help='maximum encoder positions'
     )
-
+    print("HI3")
     args = parser.parse_args()
+    # print(args.--base_model)
+    print("HI4")
+    print("ARGS: ",args)
 
     if not os.path.exists(args.save_model_to):
         os.mkdir(args.save_model_to)

@@ -94,19 +94,19 @@ def main():
     parser.add_argument(
         '--base_model',
         type=str,
-        default='facebook/bart-large',
+        default='facebook/bart-base',
         help='The name or path of the base model you want to convert'
     )
     parser.add_argument(
         '--tokenizer_name_or_path',
         type=str,
-        default='facebook/bart-large',
+        default='facebook/bart-base',
         help='The name or path of the tokenizer'
     )
     parser.add_argument(
         '--save_model_to',
         type=str,
-        default='../../models/longformer_16k',
+        default='../../models/longformer_bart-base-8k',
         required=False,
         help='The path to save the converted model'
     )
@@ -119,7 +119,7 @@ def main():
     parser.add_argument(
         '--max_pos',
         type=int,
-        default=4096 * 4,
+        default=4096 * 2,
         help='maximum encoder positions'
     )
     print("HI3")

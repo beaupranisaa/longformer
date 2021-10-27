@@ -49,14 +49,31 @@ class SummarizationDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_input_len = max_input_len
         self.max_output_len = max_output_len
+        # print("hf_dataset: ",len(self.hf_dataset))
+        # print(len(self.hf_dataset['article'][0]))
+        # print("tokenizer: ",self.tokenizer)
+        # print("max_input_len: ",self.max_input_len)
+        # print("max_output_len: ",self.max_output_len)
 
     def __len__(self):
         return len(self.hf_dataset)
 
     def __getitem__(self, idx):
         entry = self.hf_dataset[idx]
-        input_ids = self.tokenizer.encode(entry['article'], truncation=True, max_length=self.max_input_len) # not the same as encode_plus
-        output_ids = self.tokenizer.encode(entry['abstract'], truncation=True, max_length=self.max_output_len)
+        print("IDX: ", idx, "LEN: ", len(entry['article']))
+        input_ids = self.tokenizer.encode(entry['article'], truncation=True, max_length=self.max_input_len) #512
+        # print("======= GET ITEM INPUT IDS =======")
+        '''
+        .encode returns input_ids only -> 0 bos, 2 eos, 1 padding (our case is without padding
+        .encode_plus returns input_ids, attention_mask
+        '''
+        # print("IDX: ", idx, "LEN: ", len(entry['article']),len(input_ids),len(entry['article'])//len(input_ids) ) 
+        # print("IDX: ", idx, "LEN: ", len(input_ids))
+        # print(input_ids)
+        output_ids = self.tokenizer.encode(entry['abstract'], truncation=True, max_length=self.max_output_len) #256
+        # print("======= GET ITEM OUTPUT IDS =======")
+        # print("IDX: ", idx, "LEN: ", len(output_ids))
+        # print(output_ids)
         if self.tokenizer.bos_token_id is None:  # pegasus
             output_ids = [self.tokenizer.pad_token_id] + output_ids
         return torch.tensor(input_ids), torch.tensor(output_ids)
@@ -65,6 +82,10 @@ class SummarizationDataset(Dataset):
     def collate_fn(batch):
         # A hack to know if this is bart or pegasus. DDP doesn't like global variables nor class-level memebr variables
         if batch[0][0][-1].item() == 2:
+            '''
+            eos = 2 
+            if eos =2 , then pad with 1
+            '''
             pad_token_id = 1  # AutoTokenizer.from_pretrained('facebook/bart-base').pad_token_id
         elif batch[0][0][-1].item() == 1:
             pad_token_id = 0  # AutoTokenizer.from_pretrained('google/pegasus-large').pad_token_id
@@ -72,7 +93,7 @@ class SummarizationDataset(Dataset):
             assert False
 
         input_ids, output_ids = list(zip(*batch))
-        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id)
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id) # incase of unequal seq len of samples with in a batch, pad with 1
         output_ids = torch.nn.utils.rnn.pad_sequence(output_ids, batch_first=True, padding_value=pad_token_id)
         return input_ids, output_ids
 
@@ -95,6 +116,8 @@ class Summarizer(pl.LightningModule):
             config.attention_window = [self.args.attention_window] * config.encoder_layers
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
                 self.args.model_path, config=config)
+            # print(self.model)
+            # Embedding(50265, x) <<<< bart tokenizer has vocab size of 50265
         else:
             print('not longgggg')
             config = AutoConfig.from_pretrained(self.args.model_path)
@@ -105,34 +128,80 @@ class Summarizer(pl.LightningModule):
 
     def _prepare_input(self, input_ids):
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
-        print("ATTENTION_MASK)
-        print(attention_mask)
-        print(attentiona_mask.shape)
-        attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
+        # print("================ ATTENTION_MASK original ================")
+        # print(attention_mask)
+        # print(attention_mask.shape)
+        attention_mask[input_ids == self.tokenizer.pad_token_id] = 0 # if input_ids == 1 (padded) set attention - 0 so no attention?
+        # print("================ ATTENTION_MASK tokenizer ================")
+        # print(input_ids)
+        # print(attention_mask)
         if isinstance(self.model, LongformerEncoderDecoderForConditionalGeneration):
-            attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work
+            attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work -> the first token but for summarization, it is actually not needed
+            # print("================ ATTENTION_MASK GLOBAL ================")
+            # print(attention_mask)
             if self.args.attention_mode == 'sliding_chunks':
+                # print("ATTENTION WINDOW: ",self.model.config.attention_window) # n layers of encoder
                 half_padding_mod = self.model.config.attention_window[0]
+                # print("-------- sliding chunks --------")
+                # print(half_padding_mod) ## 512
             elif self.args.attention_mode == 'sliding_chunks_no_overlap':
                 half_padding_mod = self.model.config.attention_window[0] / 2
+                # print("-------- sliding chunks no overlaps --------")
+                # print(half_padding_mod)
             else:
                 raise NotImplementedError
             input_ids, attention_mask = pad_to_window_size(  # ideally, should be moved inside the LongformerModel
                 input_ids, attention_mask, half_padding_mod, self.tokenizer.pad_token_id)
+            # print("=============== pad to window size ================")
+            # print(self.tokenizer.pad_token_id) # Bart pad_token_id = 1
+            # print(type(input_ids), type(attention_mask))
+            # print(input_ids)
+            # ones = [x for x in range(input_ids.shape[1]) if input_ids[:,x][0] == 1]
+            # print("ONES: ",ones) #pad the 512 - 1024th token with 1
+            # zeros = [x for x in range(input_ids.shape[1]) if input_ids[:,x][0] == 0]
+            # print("ZEROS: ",zeros)
+            # not_ones_zeros = [x for x in range(input_ids.shape[1]) if input_ids[:,x][0] != 0 and input_ids[:,x][0] != 1]
+            # print("NOT ONES ZEROS: ",not_ones_zeros)
+            # print(len(input_ids[input_ids == 1]), input_ids.shape[1] - len(input_ids[input_ids == 0]) - len(input_ids[input_ids == 1]),len(input_ids[input_ids == 0]))
+            # 512,511,1
+            # print(len(attention_mask[attention_mask==0]),len(attention_mask[attention_mask==1]),len(attention_mask[attention_mask==2]))
+            # 512,511,1
+            '''
+            if input_ids is padded with 1 >> so no attention mask so 0
+            if input_ids has value !=0 and !=1 >> yes attention mask so 1
+            if input_ids is 0 >> bos so global attention >> attention mask = 2
+            '''
+            # print(attention_mask)
         return input_ids, attention_mask
 
     def forward(self, input_ids, output_ids):
+        print("=============== FORWARD ===============")
         input_ids, attention_mask = self._prepare_input(input_ids)
-        decoder_input_ids = output_ids[:, :-1]
-        decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
-        labels = output_ids[:, 1:].clone()
+        # print(output_ids) # 0 bos, 2 eos
+        decoder_input_ids = output_ids[:, :-1] # w/o the last token cuz input only n and n is used to predict n+1
+        print("---- DECODER INPUT IDS ----")
+        print(decoder_input_ids.shape)
+        decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id) # not equal to 1 (bart) means pad
+        print("---- DECODER ATTENTION MASK ----")
+        print(decoder_attention_mask)
+        '''
+        decoder_attention_mask = BOOLEAN 
+        all TRUE means all attentions
+        If remembner correctly decoder = full self-attention n2
+        '''
+        labels = output_ids[:, 1:].clone() # not the first token cuz predict n+1?
+        print("---- labels ----")
+        print(labels.shape)
         outputs = self.model(
                 input_ids,
                 attention_mask=attention_mask,
                 decoder_input_ids=decoder_input_ids,
                 decoder_attention_mask=decoder_attention_mask,
-                use_cache=False,)
+                use_cache=False,) # to output is n+1 always and then is used to cal loss with label
         lm_logits = outputs[0]
+        print("---- lm_logits ----")
+        print(lm_logits)
+        print(lm_logits.shape)
         if self.args.label_smoothing == 0:
             # Same behavior as modeling_bart.py, besides ignoring pad_token_id
             ce_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
@@ -259,7 +328,7 @@ class Summarizer(pl.LightningModule):
 
     @staticmethod
     def add_model_specific_args(parser, root_dir):
-        parser.add_argument("--save_dir", type=str, default='summarization')
+        parser.add_argument("--save_dir", type=str, default='summarization-test')
         parser.add_argument("--save_prefix", type=str, default='test')
         parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
         parser.add_argument("--grad_accum", type=int, default=1, help="number of gradient accumulation steps")
@@ -273,12 +342,12 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
         parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
         parser.add_argument("--disable_checkpointing", action='store_true', help="No logging or checkpointing")
-        parser.add_argument("--max_output_len", type=int, default=256,
+        parser.add_argument("--max_output_len", type=int, default=256, # max outputs length!
                             help="maximum num of wordpieces/summary. Used for training and testing")
         parser.add_argument("--max_input_len", type=int, default=512,
                             help="maximum num of wordpieces/summary. Used for training and testing")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
-        parser.add_argument("--model_path", type=str, default='../../models/longformer_bart-base-16k', #'facebook/bart-base', ../../models/longformer_16k'
+        parser.add_argument("--model_path", type=str, default='../../models/longformer_bart-base-8k', #'facebook/bart-base', ../../models/longformer_16k'
                             help="Path to the checkpoint directory or model name long")
         parser.add_argument("--tokenizer", type=str, default='facebook/bart-base')
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")

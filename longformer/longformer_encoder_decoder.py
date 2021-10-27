@@ -37,7 +37,12 @@ class LongformerEncoderDecoderConfig(BartConfig):
         self.attention_mode = attention_mode
         self.gradient_checkpointing = gradient_checkpointing
         assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2']
-
+        print("=============== LongformerEncoderDecoderConfig ===============")
+        print(self.attention_window)
+        print(self.attention_dilation)
+        print(self.autoregressive)
+        print(self.attention_mode)
+        print(self.gradient_checkpointing)
 
 class LongformerSelfAttentionForBart(nn.Module):
     def __init__(self, config, layer_id):
